@@ -3,9 +3,9 @@ class TriggerController < ApplicationController
   validate_action release: { method: :post, response: :status }
   validate_action runservice: { method: :post, response: :status }
 
-  before_action :validate_token, :set_package, :set_user, only: [:create]
+  # before_action :validate_token, :set_package, :set_user, only: [:create]
   before_action :disallow_project_param, only: [:release]
-  before_action :extract_auth_from_request, :validate_auth_token, :require_valid_token, except: [:create]
+  # before_action :extract_auth_from_request, :validate_auth_token, :require_valid_token, except: [:create]
   #
   # Authentication happens with tokens, so no login is required
   #
@@ -20,61 +20,19 @@ class TriggerController < ApplicationController
   include Trigger::Errors
 
   def create
-    if !@user.is_active? || !@user.can_modify?(@package)
-      render_error message: 'Token not found or not valid.', status: 404
-      return
-    end
-
-    Backend::Api::Sources::Package.trigger_services(@package.project.name, @package.name, @user.login)
-    render_ok
-  end
-
-  def rebuild
-    rebuild_trigger = PackageControllerService::RebuildTrigger.new(package: @pkg, project: @prj, params: params)
-    authorize rebuild_trigger.policy_object, :update?
-    rebuild_trigger.rebuild?
-    render_ok
-  end
-
-  def release
-    raise NoPermissionForPackage.setup('no_permission', 403, "no permission for package #{@pkg} in project #{@pkg.project}") unless policy(@pkg).update?
-
-    manual_release_targets = @pkg.project.release_targets.where(trigger: 'manual')
-    raise NoPermissionForPackage.setup('not_found', 404, "#{@pkg.project} has no release targets that are triggered manually") unless manual_release_targets.any?
-
-    manual_release_targets.each do |release_target|
-      release_package(@pkg,
-                      release_target.target_repository,
-                      @pkg.release_target_name,
-                      { filter_source_repository: release_target.repository,
-                        manual: true,
-                        comment: 'Releasing via trigger event' })
-    end
-
-    render_ok
-  end
-
-  def runservice
-    raise NoPermissionForPackage.setup('no_permission', 403, "no permission for package #{@pkg} in project #{@pkg.project}") unless policy(@pkg).update?
-
-    # execute the service in backend
-    pass_to_backend(prepare_path_for_runservice)
-
-    @pkg.sources_changed
+    authencation
+    get token
+    pundit
+    token.call
   end
 
   private
-
-  def prepare_path_for_runservice
-    path = @pkg.source_path
-    params = { cmd: 'runservice', comment: 'runservice via trigger', user: User.session!.login }
-    URI(path + build_query_from_hash(params, [:cmd, :comment, :user])).to_s
-  end
 
   def disallow_project_param
     render_error(message: 'You specified a project, but the token defines the project/package to release', status: 403, errorcode: 'no_permission') if params[:project].present?
   end
 
+  # AUTHENTICATION
   def extract_auth_from_request
     @token_extractor = ::TriggerControllerService::TokenExtractor.new(request).call
   end
@@ -112,16 +70,17 @@ class TriggerController < ApplicationController
     end
   end
 
-  def set_package
-    @package = @token.package || Package.get_by_project_and_name(params[:project], params[:package], use_source: true)
-  end
-
+  # AUTHORIZATION webhook
   def validate_token
     @token = Token::Service.find_by(id: params[:id])
     return if @token && @token.valid_signature?(signature, request.body.read)
 
     render_error message: 'Token not found or not valid.', status: 403
     false
+  end
+
+  def set_package
+    @package = @token.package || Package.get_by_project_and_name(params[:project], params[:package], use_source: true)
   end
 
   def set_user

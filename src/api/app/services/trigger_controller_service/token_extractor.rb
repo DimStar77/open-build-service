@@ -14,6 +14,7 @@ module TriggerControllerService
       @auth_token = if events.any?(@http_request.env['HTTP_X_GITLAB_EVENT'])
                       'Token ' + @http_request.env['HTTP_X_GITLAB_TOKEN']
                     else
+                      # This is for osc, GitHub is signing the body with the token
                       @http_request.env['HTTP_AUTHORIZATION']
                     end
     end
@@ -25,6 +26,19 @@ module TriggerControllerService
     # it will return a Token subclass or raise ActiveRecord::RecordNotFound
     def token
       Token.token_type(@http_request['action']).find_by_string!(@auth_token[6..-1])
+    end
+
+    # from Token::Service
+    def valid_signature?(signature, body)
+      return false unless signature
+
+      ActiveSupport::SecurityUtils.secure_compare(signature_of(body), signature)
+    end
+
+    # from Token::Service
+    def signature_of(body)
+      # TODO: use sha256 (from X-Hub-Signature-256)
+      'sha1=' + OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha1'), string, body)
     end
   end
 end
